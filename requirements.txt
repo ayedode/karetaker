@@ -1,0 +1,4 @@
+typer[all]
+kubernetes
+loguru
+docker

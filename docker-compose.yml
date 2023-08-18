@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  karetaker:
+    image: ghcr.io/ayedode/karetaker:main
+    container_name: karetaker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      KARETAKER_INTERVAL: 3600
+      KARETAKER_MODE: docker
+    restart: always

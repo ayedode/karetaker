@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: karetaker
+  labels:
+    app: karetaker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: karetaker
+  template:
+    metadata:
+      labels:
+        app: karetaker
+    spec:
+      containers:
+      - name: karetaker
+        image: ghcr.io/ayedode/karetaker:main

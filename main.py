@@ -25,11 +25,23 @@ state = {
   }
 
 def get_mode():
-   if os.path.exists("/.dockerenv"):
-      return "docker"
+  mode_env = os.getenv('KARETAKER_MODE')
+  if mode_env != "":
+    return mode_env
+
+  if os.path.exists("/.dockerenv"):
+    return "docker"
+  
+  if os.path.exists("/var/run/secrets/kubernetes.io"):
+    return "kubernetes"
    
-   if os.path.exists("/var/run/secrets/kubernetes.io"):
-      return "kubernetes"
+def get_interval():
+  interval_env = os.getenv("KARETAKER_INTERVAL")
+
+  if interval_env:
+      return interval_env
+  else:
+    return 3600
 
 def get_kubeconfig_path():
     home = os.path.expanduser('~')
@@ -42,8 +54,85 @@ def get_kubeconfig_path():
     
     return kubeconfig_path
 
-def kubernetes_prune():
-  print("TBD")
+def kubernetes_prune(namespace):
+  client = state["kubernetes"]["client"]
+
+  '''
+    node=$(kubectl get node | grep "worker" | grep "NotReady" | awk '{print $1}')
+    for pod in $(kubectl get pods -A -o=JSON --field-selector spec.nodeName=${node} | jq -r '.items[] |
+    select(.metadata.namespace | startswith("bi-")) | .metadata.name') ; do
+      namespace=$(kubectl get pods -A -o=JSON --field-selector metadata.name=${pod}| jq -r ' .items[] .metadata.namespace')
+      echo "Killing pod ${namespace}/${pod}"
+      kubectl delete pod -n ${namespace} --force ${pod}
+    done
+  '''
+
+  pods = []
+  nodes = []
+  try:
+    # Prepare nodes
+    node_list = client.list_node()
+    for node in node_list.items:
+      _node = {
+          "name": node.metadata.name,
+          "scheduling": node.spec.unschedulable,
+          "status": "Not ready"
+      }
+
+      node_scheduling = node.spec.unschedulable
+
+      for condition in node.status.conditions:
+          if condition.type == "Ready" and condition.status:
+              _node["status"] = "Ready"
+              break
+      if node_scheduling is None or not node_scheduling:
+          pass
+      else:
+        _node["status"] = f"{_node['status']},SchedulingDisabled"
+      nodes.append(_node)
+
+    # Prepare pods
+    if namespace:
+      for n in namespace:
+        pod_list = client.list_namespaced_pod(n)
+
+        if len(pod_list.items) < 1:
+          logger.warning(f"No pods in namespace '{n}' or namespace doesn't exist")
+        else:
+          for pod in pod_list.items:
+            pods.append(pod)
+
+    else:
+      pod_list = client.list_pod_for_all_namespaces(watch=False)
+      for pod in pod_list.items:
+          pods.append(pod)
+
+  except Exception as e:
+      logger.error(e)
+      raise typer.Abort()
+  
+  table = Table("Pod", "Namespace", "Node", "Status", "Dead?")
+  for pod in pods:
+    dead = False
+    status = pod.status.phase
+
+    '''
+    if pod.DeletionTimestamp != nil && pod.Status.Reason == node.NodeUnreachablePodReason { 
+      reason = "Unknown" 
+    } else if pod.DeletionTimestamp != nil { 
+      reason = "Terminating" 
+    } 
+    '''
+    if hasattr(pod, "deletion_timestamp"):
+        # Pod is marked for deletion
+        # Check if it's on a dead node
+        for node in nodes:
+          if pod.spec.node_name == node["name"] and node["status"] != "Ready":
+            status = "Terminating"
+            dead = True
+    
+    table.add_row(pod.metadata.name, pod.metadata.namespace, pod.spec.node_name, status, str(dead))
+  console.print(table)
 
 def docker_prune(dangling: bool = False):
   client = state["docker"]["client"]
@@ -116,97 +205,13 @@ def run(dangling: bool = False):
         case "docker":
           docker_prune(dangling)
         case "kubernetes":
-          kubernetes_prune()
+          kubernetes_prune(namespace)
         case _:
           logger.error("No mode chosen")
           raise typer.Abort()
       
       logger.info(f"sleeping for {state['interval']}s")
       time.sleep(state["interval"])
-     
-
-@logger.catch
-@app.command()
-def prune(namespace: Optional[List[str]] = typer.Option(None)):
-    client = state["kubernetes"]["client"]
-
-    '''
-      node=$(kubectl get node | grep "worker" | grep "NotReady" | awk '{print $1}')
-      for pod in $(kubectl get pods -A -o=JSON --field-selector spec.nodeName=${node} | jq -r '.items[] |
-      select(.metadata.namespace | startswith("bi-")) | .metadata.name') ; do
-        namespace=$(kubectl get pods -A -o=JSON --field-selector metadata.name=${pod}| jq -r ' .items[] .metadata.namespace')
-        echo "Killing pod ${namespace}/${pod}"
-        kubectl delete pod -n ${namespace} --force ${pod}
-      done
-    '''
-
-    pods = []
-    nodes = []
-    try:
-      # Prepare nodes
-      node_list = client.list_node()
-      for node in node_list.items:
-        _node = {
-           "name": node.metadata.name,
-           "scheduling": node.spec.unschedulable,
-           "status": "Not ready"
-        }
-
-        node_scheduling = node.spec.unschedulable
-
-        for condition in node.status.conditions:
-            if condition.type == "Ready" and condition.status:
-                _node["status"] = "Ready"
-                break
-        if node_scheduling is None or not node_scheduling:
-            pass
-        else:
-          _node["status"] = f"{_node['status']},SchedulingDisabled"
-        nodes.append(_node)
-
-      # Prepare pods
-      if namespace:
-        for n in namespace:
-          pod_list = client.list_namespaced_pod(n)
-
-          if len(pod_list.items) < 1:
-            logger.warning(f"No pods in namespace '{n}' or namespace doesn't exist")
-          else:
-            for pod in pod_list.items:
-              pods.append(pod)
-
-      else:
-        pod_list = client.list_pod_for_all_namespaces(watch=False)
-        for pod in pod_list.items:
-            pods.append(pod)
-
-    except Exception as e:
-        logger.error(e)
-        raise typer.Abort()
-    
-    table = Table("Pod", "Namespace", "Node", "Status", "Dead?")
-    for pod in pods:
-      dead = False
-      status = pod.status.phase
-
-      '''
-      if pod.DeletionTimestamp != nil && pod.Status.Reason == node.NodeUnreachablePodReason { 
-        reason = "Unknown" 
-      } else if pod.DeletionTimestamp != nil { 
-        reason = "Terminating" 
-      } 
-      '''
-      if hasattr(pod, "deletion_timestamp"):
-         # Pod is marked for deletion
-         # Check if it's on a dead node
-         for node in nodes:
-            if pod.spec.node_name == node["name"] and node["status"] != "Ready":
-              status = "Terminating"
-              dead = True
-      
-      table.add_row(pod.metadata.name, pod.metadata.namespace, pod.spec.node_name, status, str(dead))
-    console.print(table)
-
 
 @logger.catch
 @app.callback()
@@ -215,7 +220,7 @@ def main(
     mode: str = get_mode(), 
     kubeconfig: str = get_kubeconfig_path(), 
     incluster: bool = True,
-    interval: int = 3600,
+    interval: int = get_interval(),
    ):
     """
     Karetaker. Your friendly garbage collector for Docker and Kubernetes.
@@ -238,7 +243,7 @@ def main(
        logger.error("failed to auto-detect mode. Please set '--mode docker' or '--mode kubernetes'")
        raise typer.Abort()
     state["mode"] = mode
-    
+
     logger.info(f"running in mode: {mode}")
 
     state["interval"] = interval

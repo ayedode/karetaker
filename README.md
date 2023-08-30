@@ -29,4 +29,4 @@ kubectl apply -f https://raw.githubusercontent.com/ayedode/karetaker/main/manife
 | EnvVar | Default | Description |
 | ------ | ------- | ----------- |
 | KARETAKER_MODE | `""` | Mode, `docker` or `kubernetes` |
-| KARETAKER_INTERVAL | `3600` | How long Karetaker waits between to cleanup cycles |
+| KARETAKER_INTERVAL | `3600` | How long Karetaker waits between two cleanup cycles |
